@@ -50,6 +50,22 @@ constexpr constant static float kvalues_mxfp4_f[16] = {
     0, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f, -0, -.5f, -1.f, -1.5f, -2.f, -3.f, -4.f, -6.f
 };
 
+constexpr constant static float kvalues_opentq_2_f[4] = {
+    -1.510417581f, -0.452780038f, 0.452780038f, 1.510417581f,
+};
+
+constexpr constant static float kvalues_opentq_3_f[8] = {
+    -2.151945591f, -1.343909264f, -0.756005228f, -0.245094165f,
+     0.245094165f,  0.756005228f,  1.343909264f,  2.151945591f,
+};
+
+constexpr constant static float kvalues_opentq_4_f[16] = {
+    -2.726909161f, -2.062596798f, -1.611492515f, -1.250051737f,
+    -0.936991751f, -0.652631938f, -0.385444403f, -0.127505288f,
+     0.127505288f,  0.385444403f,  0.652631938f,  0.936991751f,
+     1.250051737f,  1.611492515f,  2.062596798f,  2.726909161f,
+};
+
 static inline int best_index_int8(int n, constant float * val, float x) {
     if (x <= val[0]) return 0;
     if (x >= val[n-1]) return n-1;
@@ -83,6 +99,108 @@ static inline float sum(float x) {
 
 static inline float sum(float4 x) {
     return x[0] + x[1] + x[2] + x[3];
+}
+
+static inline float opentq_codebook_value(int bits, uint q) {
+    switch (bits) {
+        case 2: return kvalues_opentq_2_f[q];
+        case 3: return kvalues_opentq_3_f[q];
+        default: return kvalues_opentq_4_f[q];
+    }
+}
+
+static inline uint opentq_get_bits(device const uint8_t * data, int bits, int index) {
+    const int bit_offset  = index * bits;
+    const int byte_offset = bit_offset >> 3;
+    const int shift       = bit_offset & 7;
+    uint value = uint(data[byte_offset]) >> shift;
+    if (shift + bits > 8) {
+        value |= uint(data[byte_offset + 1]) << (8 - shift);
+    }
+    return value & ((1u << bits) - 1u);
+}
+
+static inline float opentq_sign(uint seed, int position) {
+    uint64_t mixed = uint64_t(seed) ^ (uint64_t(position) + 0x9E3779B97F4A7C15ULL);
+    mixed ^= mixed >> 30;
+    mixed *= 0xBF58476D1CE4E5B9ULL;
+    mixed ^= mixed >> 27;
+    mixed *= 0x94D049BB133111EBULL;
+    mixed ^= mixed >> 31;
+    return (mixed & 1ULL) == 0 ? -1.0f : 1.0f;
+}
+
+static inline float opentq_hadamard(int p, int j) {
+    uint x = uint(p & j);
+    x ^= x >> 16;
+    x ^= x >> 8;
+    x ^= x >> 4;
+    x &= 0x0Fu;
+    return ((0x6996u >> x) & 1u) ? -1.0f : 1.0f;
+}
+
+static inline float opentq_rotated_value(
+        device const uint8_t * qs,
+        device const ggml_half * scales,
+        int bits,
+        int sub_block_size,
+        int index) {
+    const int block = index / 32;
+    const int sub   = (index % 32) / sub_block_size;
+    const int sub_blocks_per_block = 32 / sub_block_size;
+    const int scale_index = block * sub_blocks_per_block + sub;
+    const uint q = opentq_get_bits(qs, bits, index);
+    return opentq_codebook_value(bits, q) * float(scales[scale_index]);
+}
+
+static inline float opentq_decode_value(
+        uint seed,
+        device const uint8_t * qs,
+        device const ggml_half * scales,
+        int bits,
+        int sub_block_size,
+        device const uint8_t * residual_qs,
+        device const ggml_half * residual_scales,
+        int residual_bits,
+        int position) {
+    float acc = 0.0f;
+    for (int j = 0; j < QK_OPENTQ; ++j) {
+        float rotated = opentq_rotated_value(qs, scales, bits, sub_block_size, j);
+        if (residual_bits > 0) {
+            rotated += opentq_rotated_value(residual_qs, residual_scales, residual_bits, sub_block_size, j);
+        }
+        acc += opentq_hadamard(position, j) * rotated;
+    }
+    return opentq_sign(seed, position) * acc * 0.08838834764831845f;
+}
+
+static inline void opentq_prepare_hadamard_y(
+        uint seed,
+        device const float * yb,
+        threadgroup float * work,
+        bool valid,
+        ushort tiisg) {
+    for (int p = tiisg; p < QK_OPENTQ; p += N_SIMDWIDTH) {
+        work[p] = valid ? opentq_sign(seed, p) * yb[p] : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (int h = 1; h < QK_OPENTQ; h <<= 1) {
+        for (int p = tiisg; p < QK_OPENTQ; p += N_SIMDWIDTH) {
+            if ((p & h) == 0) {
+                const float left  = work[p];
+                const float right = work[p + h];
+                work[p]     = left + right;
+                work[p + h] = left - right;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (int p = tiisg; p < QK_OPENTQ; p += N_SIMDWIDTH) {
+        work[p] *= 0.08838834764831845f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 }
 
 // NOTE: this is not dequantizing - we are simply fitting the template
@@ -3507,6 +3625,176 @@ void kernel_mul_mv_q1_0_f32_impl(
             dst_f32[first_row + row] = tot;
         }
     }
+}
+
+template<typename block_q_type, int BITS, int SUB_BLOCK>
+static inline float opentq_block_dot_nores(device const block_q_type * xb, threadgroup float * hy, ushort tiisg) {
+    float sumf = 0.0f;
+    for (int j = tiisg; j < QK_OPENTQ; j += N_SIMDWIDTH) {
+        const float rotated = opentq_rotated_value(xb->qs, xb->scales, BITS, SUB_BLOCK, j);
+        sumf += rotated * hy[j];
+    }
+    return sumf;
+}
+
+template<typename block_q_type, int BITS, int SUB_BLOCK, int RES_BITS>
+static inline float opentq_block_dot_res(device const block_q_type * xb, threadgroup float * hy, ushort tiisg) {
+    float sumf = 0.0f;
+    for (int j = tiisg; j < QK_OPENTQ; j += N_SIMDWIDTH) {
+        const float rotated =
+            opentq_rotated_value(xb->qs, xb->scales, BITS, SUB_BLOCK, j) +
+            opentq_rotated_value(xb->residual_qs, xb->residual_scales, RES_BITS, SUB_BLOCK, j);
+        sumf += rotated * hy[j];
+    }
+    return sumf;
+}
+
+template<typename block_q_type, int BITS, int SUB_BLOCK, typename args_t>
+void kernel_mul_mv_opentq_nores_f32_impl(
+        args_t args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+    const int nb = args.ne00 / QK_OPENTQ;
+    const int r0 = tgpig.x * NSG + sgitg;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
+
+    const bool valid = r0 < args.ne01;
+
+    const uint i12 = im % args.ne12;
+    const uint i13 = im / args.ne12;
+
+    const uint64_t offset0 = r0*args.nb01 + (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
+    const uint64_t offset1 = r1*args.nb11 + (i12        )*args.nb12 + (i13        )*args.nb13;
+
+    device const block_q_type * x = (device const block_q_type *) (src0 + offset0);
+    device const float        * y = (device const float        *) (src1 + offset1);
+    threadgroup float * hy = (threadgroup float *) shmem + sgitg * QK_OPENTQ;
+
+    float sumf = 0.0f;
+    for (int ib = 0; ib < nb; ++ib) {
+        const uint seed = valid ? x[ib].seed : 0;
+        opentq_prepare_hadamard_y(seed, y + ib*QK_OPENTQ, hy, valid, tiisg);
+        if (valid) {
+            sumf += opentq_block_dot_nores<block_q_type, BITS, SUB_BLOCK>(x + ib, hy, tiisg);
+        }
+    }
+
+    const float total = simd_sum(sumf);
+    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
+    if (valid && tiisg == 0) {
+        dst_f32[r0] = total;
+    }
+}
+
+template<typename block_q_type, int BITS, int SUB_BLOCK, int RES_BITS, typename args_t>
+void kernel_mul_mv_opentq_res_f32_impl(
+        args_t args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+    const int nb = args.ne00 / QK_OPENTQ;
+    const int r0 = tgpig.x * NSG + sgitg;
+    const int r1 = tgpig.y;
+    const int im = tgpig.z;
+
+    const bool valid = r0 < args.ne01;
+
+    const uint i12 = im % args.ne12;
+    const uint i13 = im / args.ne12;
+
+    const uint64_t offset0 = r0*args.nb01 + (i12/args.r2)*args.nb02 + (i13/args.r3)*args.nb03;
+    const uint64_t offset1 = r1*args.nb11 + (i12        )*args.nb12 + (i13        )*args.nb13;
+
+    device const block_q_type * x = (device const block_q_type *) (src0 + offset0);
+    device const float        * y = (device const float        *) (src1 + offset1);
+    threadgroup float * hy = (threadgroup float *) shmem + sgitg * QK_OPENTQ;
+
+    float sumf = 0.0f;
+    for (int ib = 0; ib < nb; ++ib) {
+        const uint seed = valid ? x[ib].seed : 0;
+        opentq_prepare_hadamard_y(seed, y + ib*QK_OPENTQ, hy, valid, tiisg);
+        if (valid) {
+            sumf += opentq_block_dot_res<block_q_type, BITS, SUB_BLOCK, RES_BITS>(x + ib, hy, tiisg);
+        }
+    }
+
+    const float total = simd_sum(sumf);
+    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;
+    if (valid && tiisg == 0) {
+        dst_f32[r0] = total;
+    }
+}
+
+kernel void kernel_mul_mv_opentq_tq3_sb4_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_opentq_nores_f32_impl<block_opentq_tq3_sb4, 3, 8, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+kernel void kernel_mul_mv_opentq_tq4_sb2_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_opentq_nores_f32_impl<block_opentq_tq4_sb2, 4, 16, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+kernel void kernel_mul_mv_opentq_tq4_sb4_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_opentq_nores_f32_impl<block_opentq_tq4_sb4, 4, 8, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+kernel void kernel_mul_mv_opentq_tq4r2_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_opentq_res_f32_impl<block_opentq_tq4r2, 4, 8, 2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+kernel void kernel_mul_mv_opentq_tq4r4_f32(
+        constant ggml_metal_kargs_mul_mv & args,
+        device const char * src0,
+        device const char * src1,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]],
+        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_opentq_res_f32_impl<block_opentq_tq4r4, 4, 8, 4, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, shmem, tgpig, tiisg, sgitg);
 }
 
 [[host_name("kernel_mul_mv_q1_0_f32")]]

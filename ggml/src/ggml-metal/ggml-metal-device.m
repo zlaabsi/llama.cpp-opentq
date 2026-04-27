@@ -887,6 +887,19 @@ void ggml_metal_device_free(ggml_metal_device_t dev) {
     free(dev);
 }
 
+static bool ggml_metal_type_is_opentq(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_OPENTQ_TQ3_SB4:
+        case GGML_TYPE_OPENTQ_TQ4_SB2:
+        case GGML_TYPE_OPENTQ_TQ4_SB4:
+        case GGML_TYPE_OPENTQ_TQ4R2:
+        case GGML_TYPE_OPENTQ_TQ4R4:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void * ggml_metal_device_get_obj(ggml_metal_device_t dev) {
     return dev->mtl_device;
 }
@@ -1254,6 +1267,9 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 };
             }
         case GGML_OP_GET_ROWS:
+            if (ggml_metal_type_is_opentq(op->src[0]->type)) {
+                return false;
+            }
             return op->src[0]->type != GGML_TYPE_NVFP4;
         case GGML_OP_SET_ROWS:
             {

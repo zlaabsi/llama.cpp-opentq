@@ -25,6 +25,19 @@ static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     return ggml_metal_buffer_get_id(ctx, t);
 }
 
+static bool ggml_metal_type_is_opentq(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_OPENTQ_TQ3_SB4:
+        case GGML_TYPE_OPENTQ_TQ4_SB2:
+        case GGML_TYPE_OPENTQ_TQ4_SB4:
+        case GGML_TYPE_OPENTQ_TQ4R2:
+        case GGML_TYPE_OPENTQ_TQ4R4:
+            return true;
+        default:
+            return false;
+    }
+}
+
 struct ggml_metal_op {
     ggml_metal_op(
         ggml_metal_device_t dev,
@@ -2153,6 +2166,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     } else if (
         !ggml_is_transposed(op->src[0]) &&
         !ggml_is_transposed(op->src[1]) &&
+        !ggml_metal_type_is_opentq(op->src[0]->type) &&
         // for now the matrix-matrix multiplication kernel only works on A14+/M1+ SoCs
         // AMD GPU and older A-chips will reuse matrix-vector multiplication kernel
         props_dev->has_simdgroup_mm && ne00 >= 64 && ne11 > ne11_mm_min) {
