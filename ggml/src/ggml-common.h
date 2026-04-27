@@ -278,6 +278,51 @@ typedef struct {
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
 //
+// OpenTQ WHT + Lloyd-Max weight quantization
+//
+
+#define QK_OPENTQ 128
+
+typedef struct {
+    uint32_t seed;
+    ggml_half scales[16];
+    uint8_t qs[48];
+} block_opentq_tq3_sb4;
+static_assert(sizeof(block_opentq_tq3_sb4) == 4 + 16*sizeof(ggml_half) + 48, "wrong opentq_tq3_sb4 block size/padding");
+
+typedef struct {
+    uint32_t seed;
+    ggml_half scales[8];
+    uint8_t qs[64];
+} block_opentq_tq4_sb2;
+static_assert(sizeof(block_opentq_tq4_sb2) == 4 + 8*sizeof(ggml_half) + 64, "wrong opentq_tq4_sb2 block size/padding");
+
+typedef struct {
+    uint32_t seed;
+    ggml_half scales[16];
+    uint8_t qs[64];
+} block_opentq_tq4_sb4;
+static_assert(sizeof(block_opentq_tq4_sb4) == 4 + 16*sizeof(ggml_half) + 64, "wrong opentq_tq4_sb4 block size/padding");
+
+typedef struct {
+    uint32_t seed;
+    ggml_half scales[16];
+    uint8_t qs[64];
+    ggml_half residual_scales[16];
+    uint8_t residual_qs[32];
+} block_opentq_tq4r2;
+static_assert(sizeof(block_opentq_tq4r2) == 4 + 32*sizeof(ggml_half) + 96, "wrong opentq_tq4r2 block size/padding");
+
+typedef struct {
+    uint32_t seed;
+    ggml_half scales[16];
+    uint8_t qs[64];
+    ggml_half residual_scales[16];
+    uint8_t residual_qs[64];
+} block_opentq_tq4r4;
+static_assert(sizeof(block_opentq_tq4r4) == 4 + 32*sizeof(ggml_half) + 128, "wrong opentq_tq4r4 block size/padding");
+
+//
 // Super-block quantization structures
 //
 

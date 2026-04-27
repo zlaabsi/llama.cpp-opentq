@@ -922,6 +922,41 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
+    [GGML_TYPE_OPENTQ_TQ3_SB4] = {
+        .type_name                = "opentq_tq3_sb4",
+        .blck_size                = QK_OPENTQ,
+        .type_size                = sizeof(block_opentq_tq3_sb4),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_opentq_tq3_sb4,
+    },
+    [GGML_TYPE_OPENTQ_TQ4_SB2] = {
+        .type_name                = "opentq_tq4_sb2",
+        .blck_size                = QK_OPENTQ,
+        .type_size                = sizeof(block_opentq_tq4_sb2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_opentq_tq4_sb2,
+    },
+    [GGML_TYPE_OPENTQ_TQ4_SB4] = {
+        .type_name                = "opentq_tq4_sb4",
+        .blck_size                = QK_OPENTQ,
+        .type_size                = sizeof(block_opentq_tq4_sb4),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_opentq_tq4_sb4,
+    },
+    [GGML_TYPE_OPENTQ_TQ4R2] = {
+        .type_name                = "opentq_tq4r2",
+        .blck_size                = QK_OPENTQ,
+        .type_size                = sizeof(block_opentq_tq4r2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_opentq_tq4r2,
+    },
+    [GGML_TYPE_OPENTQ_TQ4R4] = {
+        .type_name                = "opentq_tq4r4",
+        .blck_size                = QK_OPENTQ,
+        .type_size                = sizeof(block_opentq_tq4r4),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_opentq_tq4r4,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {

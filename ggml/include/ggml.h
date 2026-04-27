@@ -429,7 +429,12 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_OPENTQ_TQ3_SB4 = 42,
+        GGML_TYPE_OPENTQ_TQ4_SB2 = 43,
+        GGML_TYPE_OPENTQ_TQ4_SB4 = 44,
+        GGML_TYPE_OPENTQ_TQ4R2   = 45,
+        GGML_TYPE_OPENTQ_TQ4R4   = 46,
+        GGML_TYPE_COUNT   = 47,
     };
 
     // precision

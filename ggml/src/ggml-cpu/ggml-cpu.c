@@ -396,6 +396,31 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
+    [GGML_TYPE_OPENTQ_TQ3_SB4] = {
+        .vec_dot                  = ggml_vec_dot_opentq_tq3_sb4_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_OPENTQ_TQ4_SB2] = {
+        .vec_dot                  = ggml_vec_dot_opentq_tq4_sb2_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_OPENTQ_TQ4_SB4] = {
+        .vec_dot                  = ggml_vec_dot_opentq_tq4_sb4_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_OPENTQ_TQ4R2] = {
+        .vec_dot                  = ggml_vec_dot_opentq_tq4r2_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_OPENTQ_TQ4R4] = {
+        .vec_dot                  = ggml_vec_dot_opentq_tq4r4_q8_0,
+        .vec_dot_type             = GGML_TYPE_Q8_0,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_I32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
     },

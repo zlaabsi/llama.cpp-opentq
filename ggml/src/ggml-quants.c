@@ -2407,6 +2407,174 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
     }
 }
 
+static const float opentq_codebook_2[4] = {
+    -1.510417581f, -0.452780038f, 0.452780038f, 1.510417581f,
+};
+
+static const float opentq_codebook_3[8] = {
+    -2.151945591f, -1.343909264f, -0.756005228f, -0.245094165f,
+     0.245094165f,  0.756005228f,  1.343909264f,  2.151945591f,
+};
+
+static const float opentq_codebook_4[16] = {
+    -2.726909161f, -2.062596798f, -1.611492515f, -1.250051737f,
+    -0.936991751f, -0.652631938f, -0.385444403f, -0.127505288f,
+     0.127505288f,  0.385444403f,  0.652631938f,  0.936991751f,
+     1.250051737f,  1.611492515f,  2.062596798f,  2.726909161f,
+};
+
+static inline const float * opentq_codebook(int bits) {
+    switch (bits) {
+        case 2: return opentq_codebook_2;
+        case 3: return opentq_codebook_3;
+        case 4: return opentq_codebook_4;
+        default: GGML_ABORT("unsupported OpenTQ bit width");
+    }
+}
+
+static inline uint8_t opentq_get_bits(const uint8_t * data, int bits, int index) {
+    const int bit_offset = index * bits;
+    const int byte_offset = bit_offset >> 3;
+    const int shift = bit_offset & 7;
+    uint32_t value = data[byte_offset] >> shift;
+    if (shift + bits > 8) {
+        value |= ((uint32_t) data[byte_offset + 1]) << (8 - shift);
+    }
+    return value & ((1u << bits) - 1u);
+}
+
+static inline float opentq_sign(uint32_t seed, int position) {
+    uint64_t mixed = ((uint64_t) seed) ^ ((uint64_t) position + UINT64_C(0x9E3779B97F4A7C15));
+    mixed ^= mixed >> 30;
+    mixed *= UINT64_C(0xBF58476D1CE4E5B9);
+    mixed ^= mixed >> 27;
+    mixed *= UINT64_C(0x94D049BB133111EB);
+    mixed ^= mixed >> 31;
+    return (mixed & 1u) == 0 ? -1.0f : 1.0f;
+}
+
+static void opentq_fwht_128(float * values) {
+    for (int h = 1; h < QK_OPENTQ; h <<= 1) {
+        for (int i = 0; i < QK_OPENTQ; i += h << 1) {
+            for (int j = 0; j < h; ++j) {
+                const float left = values[i + j];
+                const float right = values[i + j + h];
+                values[i + j] = left + right;
+                values[i + j + h] = left - right;
+            }
+        }
+    }
+    const float norm = 0.08838834764831845f; // 1 / sqrt(128)
+    for (int i = 0; i < QK_OPENTQ; ++i) {
+        values[i] *= norm;
+    }
+}
+
+static void opentq_decode_group(
+        uint32_t seed,
+        const uint8_t * qs,
+        const ggml_half * scales,
+        int bits,
+        int sub_block_size,
+        float * GGML_RESTRICT out) {
+    const float * codebook = opentq_codebook(bits);
+    const int sub_blocks_per_block = 32 / sub_block_size;
+    for (int i = 0; i < QK_OPENTQ; ++i) {
+        const int block = i / 32;
+        const int sub = (i % 32) / sub_block_size;
+        const int scale_index = block * sub_blocks_per_block + sub;
+        const uint8_t q = opentq_get_bits(qs, bits, i);
+        out[i] = codebook[q] * GGML_FP16_TO_FP32(scales[scale_index]);
+    }
+    opentq_fwht_128(out);
+    for (int i = 0; i < QK_OPENTQ; ++i) {
+        out[i] *= opentq_sign(seed, i);
+    }
+}
+
+static void opentq_add_residual(
+        const uint8_t * qs,
+        const ggml_half * scales,
+        int bits,
+        int sub_block_size,
+        float * GGML_RESTRICT rotated) {
+    const float * codebook = opentq_codebook(bits);
+    const int sub_blocks_per_block = 32 / sub_block_size;
+    for (int i = 0; i < QK_OPENTQ; ++i) {
+        const int block = i / 32;
+        const int sub = (i % 32) / sub_block_size;
+        const int scale_index = block * sub_blocks_per_block + sub;
+        const uint8_t q = opentq_get_bits(qs, bits, i);
+        rotated[i] += codebook[q] * GGML_FP16_TO_FP32(scales[scale_index]);
+    }
+}
+
+void dequantize_row_opentq_tq3_sb4(const block_opentq_tq3_sb4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_OPENTQ == 0);
+    const int64_t nb = k / QK_OPENTQ;
+    for (int64_t i = 0; i < nb; ++i) {
+        opentq_decode_group(x[i].seed, x[i].qs, x[i].scales, 3, 8, y + i * QK_OPENTQ);
+    }
+}
+
+void dequantize_row_opentq_tq4_sb2(const block_opentq_tq4_sb2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_OPENTQ == 0);
+    const int64_t nb = k / QK_OPENTQ;
+    for (int64_t i = 0; i < nb; ++i) {
+        opentq_decode_group(x[i].seed, x[i].qs, x[i].scales, 4, 16, y + i * QK_OPENTQ);
+    }
+}
+
+void dequantize_row_opentq_tq4_sb4(const block_opentq_tq4_sb4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_OPENTQ == 0);
+    const int64_t nb = k / QK_OPENTQ;
+    for (int64_t i = 0; i < nb; ++i) {
+        opentq_decode_group(x[i].seed, x[i].qs, x[i].scales, 4, 8, y + i * QK_OPENTQ);
+    }
+}
+
+void dequantize_row_opentq_tq4r2(const block_opentq_tq4r2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_OPENTQ == 0);
+    const int64_t nb = k / QK_OPENTQ;
+    for (int64_t i = 0; i < nb; ++i) {
+        float rotated[QK_OPENTQ];
+        const float * codebook = opentq_codebook(4);
+        for (int j = 0; j < QK_OPENTQ; ++j) {
+            const int block = j / 32;
+            const int sub = (j % 32) / 8;
+            const int scale_index = block * 4 + sub;
+            const uint8_t q = opentq_get_bits(x[i].qs, 4, j);
+            rotated[j] = codebook[q] * GGML_FP16_TO_FP32(x[i].scales[scale_index]);
+        }
+        opentq_add_residual(x[i].residual_qs, x[i].residual_scales, 2, 8, rotated);
+        opentq_fwht_128(rotated);
+        for (int j = 0; j < QK_OPENTQ; ++j) {
+            y[i * QK_OPENTQ + j] = rotated[j] * opentq_sign(x[i].seed, j);
+        }
+    }
+}
+
+void dequantize_row_opentq_tq4r4(const block_opentq_tq4r4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_OPENTQ == 0);
+    const int64_t nb = k / QK_OPENTQ;
+    for (int64_t i = 0; i < nb; ++i) {
+        float rotated[QK_OPENTQ];
+        const float * codebook = opentq_codebook(4);
+        for (int j = 0; j < QK_OPENTQ; ++j) {
+            const int block = j / 32;
+            const int sub = (j % 32) / 8;
+            const int scale_index = block * 4 + sub;
+            const uint8_t q = opentq_get_bits(x[i].qs, 4, j);
+            rotated[j] = codebook[q] * GGML_FP16_TO_FP32(x[i].scales[scale_index]);
+        }
+        opentq_add_residual(x[i].residual_qs, x[i].residual_scales, 4, 8, rotated);
+        opentq_fwht_128(rotated);
+        for (int j = 0; j < QK_OPENTQ; ++j) {
+            y[i * QK_OPENTQ + j] = rotated[j] * opentq_sign(x[i].seed, j);
+        }
+    }
+}
+
 // ====================== "True" 2-bit (de)-quantization
 
 void dequantize_row_iq2_xxs(const block_iq2_xxs * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {

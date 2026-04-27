@@ -207,6 +207,63 @@ void ggml_vec_dot_q4_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
+static void ggml_vec_dot_opentq_q8_0_impl(
+        int n,
+        float * GGML_RESTRICT s,
+        const void * GGML_RESTRICT vx,
+        const void * GGML_RESTRICT vy,
+        size_t opentq_type_size,
+        ggml_to_float_t dequantize_row) {
+    assert(n % QK_OPENTQ == 0);
+    const int nb = n / QK_OPENTQ;
+    const char * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+    float decoded[QK_OPENTQ];
+    float sumf = 0.0f;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        dequantize_row(x + ib * opentq_type_size, decoded, QK_OPENTQ);
+        for (int qb = 0; qb < QK_OPENTQ / QK8_0; ++qb) {
+            const block_q8_0 * yb = &y[ib * (QK_OPENTQ / QK8_0) + qb];
+            const float yd = GGML_CPU_FP16_TO_FP32(yb->d);
+            for (int j = 0; j < QK8_0; ++j) {
+                sumf += decoded[qb * QK8_0 + j] * ((float) yb->qs[j] * yd);
+            }
+        }
+    }
+    *s = sumf;
+}
+
+void ggml_vec_dot_opentq_tq3_sb4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc);
+    ggml_vec_dot_opentq_q8_0_impl(n, s, vx, vy, sizeof(block_opentq_tq3_sb4), (ggml_to_float_t) dequantize_row_opentq_tq3_sb4);
+}
+
+void ggml_vec_dot_opentq_tq4_sb2_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc);
+    ggml_vec_dot_opentq_q8_0_impl(n, s, vx, vy, sizeof(block_opentq_tq4_sb2), (ggml_to_float_t) dequantize_row_opentq_tq4_sb2);
+}
+
+void ggml_vec_dot_opentq_tq4_sb4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc);
+    ggml_vec_dot_opentq_q8_0_impl(n, s, vx, vy, sizeof(block_opentq_tq4_sb4), (ggml_to_float_t) dequantize_row_opentq_tq4_sb4);
+}
+
+void ggml_vec_dot_opentq_tq4r2_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc);
+    ggml_vec_dot_opentq_q8_0_impl(n, s, vx, vy, sizeof(block_opentq_tq4r2), (ggml_to_float_t) dequantize_row_opentq_tq4r2);
+}
+
+void ggml_vec_dot_opentq_tq4r4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(bs); UNUSED(bx); UNUSED(by); UNUSED(nrc);
+    ggml_vec_dot_opentq_q8_0_impl(n, s, vx, vy, sizeof(block_opentq_tq4r4), (ggml_to_float_t) dequantize_row_opentq_tq4r4);
+}
+
 // TODO: add WASM SIMD
 void ggml_vec_dot_q4_1_q8_1_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_1;
